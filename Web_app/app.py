@@ -1,67 +1,23 @@
 ############# Library Import 
-import numpy as np
+import re
+import tensorflow
 import pandas as pd
 import streamlit as st
-from keras.layers.core import Dense, Dropout, Activation
-from keras.layers import Embedding
-from keras.layers import LSTM, GRU, SimpleRNN
-from keras.layers.convolutional import Convolution1D, MaxPooling1D
-from keras.datasets import imdb
-from keras.callbacks import EarlyStopping,ModelCheckpoint
-from sklearn.model_selection import StratifiedKFold
-from keras import backend as K
-import h5py
-from keras.models import model_from_json
-from keras.models import load_model
-from sklearn.metrics import confusion_matrix
-from sklearn import metrics
-from keras.preprocessing.text import Tokenizer
-from keras_preprocessing.sequence import pad_sequences
-import random  
-import re,sys
-from keras.layers import Layer, InputSpec
-from keras.models import model_from_json
-from keras.models import load_model
-from sklearn.metrics import confusion_matrix
-from keras import initializers
-from sklearn import metrics
-
-
-from sklearn.utils import class_weight
-from sklearn.utils import compute_class_weight
 from keras.layers import *
 from keras.models import *
-from keras.regularizers import l1, l2
+from keras import backend as K
 from keras import initializers, regularizers, constraints
-from sklearn.metrics import roc_curve
-import matplotlib
-import tkinter
-import matplotlib
-import matplotlib.pyplot as plt
-import pickle as cPickle
-
-from keras import initializers, regularizers, constraints
-import keras
-from keras.layers import Dense, Input,  Bidirectional, Activation, Conv1D, GRU, TimeDistributed
-from keras.layers import Dropout, Embedding, GlobalMaxPooling1D, MaxPooling1D, Add, Flatten, SpatialDropout1D
-from keras.layers import GlobalAveragePooling1D, BatchNormalization, concatenate
-from keras.layers import Reshape,  Concatenate, Lambda, Average
-
 from keras.initializers import Constant
-from keras.layers import add
-from sklearn.utils import class_weight
+from keras_preprocessing.sequence import pad_sequences
+from sklearn.metrics import confusion_matrix, roc_curve
 from sklearn.utils import compute_class_weight
 
-import tensorflow
-
-st.set_page_config(page_title='Peptide Stability prediction')
-st.title("Peptide Stability prediction")
-
-
-alphabet = "XACDEFGHIKLMNOPQRSTUVWY"
-
-
+#constants
+aa_dict = {'A':1,'C':2,'D':3,'E':4,'F':5,'G':6,'H':7,'I':8,'K':9,'L':10,'M':11,'N':12,'P':13,'Q':14,'R':15,'S':16,'T':17,'V':18,'W':19,'Y':20}
+alphabet = ''.join(aa_dict.keys())
 pool_length = 2
+
+#functions
 def dot_product(x, kernel):
     """
     Wrapper for dot product operation, in order to be compatible with both
@@ -75,15 +31,30 @@ def dot_product(x, kernel):
         return K.squeeze(K.dot(x, K.expand_dims(kernel)), axis=-1)
     else:
         return K.dot(x, kernel)
-def seqValidatorProtein (seq):
-    alphabet = "ACDEFGHIKLMNOPQRSTUVWY"
-    for i in range(len(seq)):
-        if (seq[i] not in alphabet):
-            return False
-    return True    
+
+def seqValidator(seq):
+    if len(seq) >=7 and len(seq) <=30:
+        invalid = re.findall(f'[^{alphabet}]', seq)
+        if len(invalid) == 0:
+            return ''
+        else:
+            return 'Unknown symbols in sequence: ' + ' '.join([f'"{c}"' for c in set(invalid)])
+    else:
+        return 'Sequence length should be from 7 to 30 AA'
+
+def translate_sequence(str1):
+        a = []
+        for i in range(len(str1)):
+            a.append(aa_dict.get(str1[i]))
+        return a
+        
+def translate_result(prob):
+    if prob > 0.5:
+        return ('unstable', 100 * prob)
+    else:
+        return ('stable', 100 * (1 - prob))
 
 # load Model For Gender Prediction
-
 class AttentionWithContext(Layer):
     """
     Attention operation, with a context/query vector, for temporal data.
@@ -216,90 +187,62 @@ class AttentionWithContext(Layer):
         return input_shape[0], input_shape[-1]
 
 
+model = load_model('model.h5', custom_objects={'AttentionWithContext' : AttentionWithContext})
 
-model = load_model(
-    'model.h5', 
-    custom_objects={'AttentionWithContext' : AttentionWithContext})
-
-
-
+st.set_page_config(page_title='Peptide Stability prediction')
+st.title("Peptide Stability prediction")
 
 st.sidebar.subheader(("Abstract"))
 st.sidebar.markdown("In proteomics peptides are used as surrogates for protein quantification and therefore peptides selection is crucial for good protein quantification.At the same time large-scare proteomics studies involve hundreds of samples and take several weeks of measurement time. Thefore, the study of peptide stability during the duration of the project is essencial for quantification results with high accuracy and precision. The goal of this webserver is to predict the stability of peptides.")
 
-
-
-
-
 st.sidebar.subheader(("Please Read requirements"))
 
-
-st.sidebar.markdown("- Please Enter Valid amino acid letters (ACDEFGHIKLMNOPQRSTUVWY)")
-st.sidebar.markdown("- Please Enter only peptide of length <20")
+st.sidebar.markdown(f"- Valid amino acid letters ({alphabet})")
+st.sidebar.markdown("- Valid peptide length is from 7 to 30 amino acids")
 st.sidebar.markdown("- No Post-translational modifications are supported")
 
-#st.sidebar.text_area("Sequence Input", height=200)
-
-
-seq = ""
-len_seq = 0
-
 caption= "The proposed methodology to develop Peptide/Protein Stability classifier"
-#st.image(image, use_column_width=True, caption=caption)
 
 st.subheader(("Input Sequence(s)"))
-#fasta_string  = st.sidebar.text_area("Sequence Input", height=200)
-seq_string = st.text_area("Ex: LAENVKIK", height=200)          
-
-
+seq_string = st.text_area("Ex: LAENVKIK", height=200)
 
 if st.button("PREDICT"):
-    if (len(seq_string)>30):
-        st.error("Please input the sequence between 7 and 30 character")
-        exit()
     if (seq_string==""):
         st.error("Please input the sequence first")
         exit()
+
+    #lets try to guess the delimeter
+    for delimeter in [';', ',', '\n']:
+        if seq_string.find(delimeter) != -1:
+             break
     
+    #split by the delimeter and strip sequences
+    sequences = pd.DataFrame([s.strip() for s in seq_string.split(delimeter)], columns=['sequence'])
     #validation of proper protein string
-    if (not seqValidatorProtein(seq_string)):
-        st.error("Invalid Protein Sequence detected. Remove numerics and special characters")
-        exit()
+    sequences['error'] = sequences['sequence'].apply(seqValidator)
+
+    valid_sequences = sequences.loc[sequences['error'] == '', ['sequence']].reset_index(drop=True)
+    
+    if (valid_sequences.shape[0] > 0):
+        valid_sequences['encoding'] = valid_sequences['sequence'].apply(translate_sequence)
+
+        Sequence = tensorflow.keras.preprocessing.sequence.pad_sequences(valid_sequences['encoding'], maxlen=50, padding='post')
+        valid_sequences['prediction'] = model.predict(Sequence)
+        valid_sequences[['stability', 'probability (%)']] = pd.DataFrame(valid_sequences['prediction'].apply(translate_result).tolist())
+
+        valid_sequences.drop(['encoding', 'prediction'], axis=1, inplace=True)
+
+        st.subheader('Predicted peptides')
+        st.dataframe(valid_sequences, hide_index=True, column_config={'probability (%)': st.column_config.NumberColumn(format='%.2f')})
+        st.download_button('Download result table',
+                           valid_sequences.to_csv(index=False).encode('utf-8'),
+                           'prediction.csv',
+                           'text/csv')
     
     else:
-        
+        st.subheader('No valid input')
 
-        def trans(str1):
-            a = []
-            dic = {'A':1,'B':22,'U':23,'J':24,'Z':25,'O':26,'C':2,'D':3,'E':4,'F':5,'G':6,'H':7,'I':8,'K':9,'L':10,'M':11,'N':12,'P':13,'Q':14,'R':15,'S':16,'T':17,'V':18,'W':19,'Y':20,'X':21}
-            for i in range(len(str1)):
-                a.append(dic.get(str1[i]))
-            return a
+    if sum(sequences['error'] != '') > 0:
+        st.subheader('Not-predicted peptides')
+        st.table(sequences.loc[sequences['error'] != '', :])
 
-        Sequence = [trans(seq_string)]
-        Sequence = tensorflow.keras.preprocessing.sequence.pad_sequences(Sequence, maxlen=50, padding='post')
-        Sequence_y = model.predict(Sequence)
-
-        def predict_prob(number):
-            return [number[0],1-number[0]]
-
-        predict_probability = np.array(list(map(predict_prob, Sequence_y)))
-        
-        
-        
-
-        
-        
-        if predict_probability[0][0] > 0.5:
-            st.subheader('Peptide {} is unstable with a probability of {}%'.format(seq_string , round(predict_probability[0][0]*100)))
-        else:
-            st.subheader('Peptide {} is stable with a probability of {}%'.format(seq_string , round(predict_probability[0][1]*100)))
-
-
-   
-
-
-
-    #final_df = pd.DataFrame({'Stability prediction': tmp })          
-    #st.table(final_df) #does not truncate columns    
-    
