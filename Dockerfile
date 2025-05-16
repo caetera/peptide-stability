@@ -11,7 +11,9 @@ RUN echo "conda activate peps" >> ~/.bashrc
 SHELL ["/bin/bash", "--login", "-c"]
 
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install -r /tmp/requirements.txt
+RUN pip install -r /tmp/requirements.txt --no-cache-dir
+RUN conda clean -afy
+RUN rm -rf /var/cache/apt/archives /var/lib/apt/lists/*
 
 RUN mkdir -p /app
 
