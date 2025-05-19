@@ -3,8 +3,10 @@ import re
 import tensorflow
 import pandas as pd
 import streamlit as st
+from stqdm import stqdm
 from keras.layers import *
 from keras.models import *
+from keras.callbacks import Callback
 from keras import backend as K
 from keras import initializers, regularizers, constraints
 from keras.initializers import Constant
@@ -53,6 +55,50 @@ def translate_result(prob):
         return ('unstable', 100 * prob)
     else:
         return ('stable', 100 * (1 - prob))
+
+# Callback for model prediction progess bar
+# Kudos https://stackoverflow.com/questions/62244457/progress-of-model-predict-in-tensorflow
+class TQDMPredictCallback(Callback):
+    def __init__(self, tqdm_cls=stqdm, total=None, batch_size=None, **tqdm_params):
+        super().__init__()
+        self.tqdm_cls = tqdm_cls
+        self.tqdm_progress = None
+        self.prev_predict_batch = None
+        self.total = total
+        self.batch_size = batch_size
+        self.tqdm_params = tqdm_params
+
+    def on_predict_batch_begin(self, batch, logs=None):
+        pass
+
+    def on_predict_batch_end(self, batch, logs=None):
+        self.prev_predict_batch += self.batch_size
+        if self.prev_predict_batch <= self.total:
+            self.tqdm_progress.update(self.batch_size)
+        
+
+    def on_predict_begin(self, logs=None):
+        self.prev_predict_batch = 0
+
+        if self.total and self.batch_size:
+            total = self.total
+            self.tqdm_params['unit'] = 'peptide'
+        else:
+            total = self.params.get('steps')
+            if total:
+                total -= 1
+            else:
+                total = float('inf')
+
+            self.batch_size = 1
+            self.total = total
+            self.tqdm_params['unit'] = 'batch'
+
+        self.tqdm_progress = self.tqdm_cls(total=total, **self.tqdm_params)
+
+    def on_predict_end(self, logs=None):
+        if self.tqdm_progress is not None:
+            self.tqdm_progress.close()
 
 # load Model For Gender Prediction
 class AttentionWithContext(Layer):
@@ -219,15 +265,19 @@ if st.button("PREDICT"):
     #split by the delimeter and strip sequences
     sequences = pd.DataFrame([s.strip() for s in seq_string.split(delimeter)], columns=['sequence'])
     #validation of proper protein string
-    sequences['error'] = sequences['sequence'].apply(seqValidator)
+    with st.spinner('Validating peptide sequences...'):
+        sequences['error'] = sequences['sequence'].apply(seqValidator)
 
     valid_sequences = sequences.loc[sequences['error'] == '', ['sequence']].reset_index(drop=True)
     
     if (valid_sequences.shape[0] > 0):
-        valid_sequences['encoding'] = valid_sequences['sequence'].apply(translate_sequence)
+        with st.spinner('Preparing for ML prediction...'):
+            valid_sequences['encoding'] = valid_sequences['sequence'].apply(translate_sequence)
 
         Sequence = tensorflow.keras.preprocessing.sequence.pad_sequences(valid_sequences['encoding'], maxlen=50, padding='post')
-        valid_sequences['prediction'] = model.predict(Sequence)
+        valid_sequences['prediction'] = model.predict(Sequence, batch_size=512, callbacks=[TQDMPredictCallback(desc='Prediction...',
+                                                                                                               batch_size=512,
+                                                                                                               total=Sequence.shape[0])])
         valid_sequences[['stability', 'probability (%)']] = pd.DataFrame(valid_sequences['prediction'].apply(translate_result).tolist())
 
         valid_sequences.drop(['encoding', 'prediction'], axis=1, inplace=True)
