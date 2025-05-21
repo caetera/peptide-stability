@@ -4,7 +4,8 @@ biopython==1.78
 Pillow==8.4.0
 scikit-learn==1.2.2
 streamlit~=1.23.0
-tensorflow~=2.8.0
+tensorflow==2.8.1
 numpy<2
 altair<5
 protobuf~=3.20
+stqdm
